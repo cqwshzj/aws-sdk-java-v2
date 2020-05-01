@@ -19,6 +19,7 @@ import java.util.Collection;
 import java.util.Map;
 import software.amazon.awssdk.annotations.SdkPublicApi;
 import software.amazon.awssdk.enhanced.dynamodb.mapper.BeanTableSchema;
+import software.amazon.awssdk.enhanced.dynamodb.mapper.ImmutableTableSchema;
 import software.amazon.awssdk.enhanced.dynamodb.mapper.StaticTableSchema;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
@@ -41,6 +42,11 @@ public interface TableSchema<T> {
      */
     static <T> StaticTableSchema.Builder<T> builder(Class<T> itemClass) {
         return StaticTableSchema.builder(itemClass);
+    }
+
+    static <T, B> ImmutableTableSchema.Builder<T, B> builder(Class<T> immutableItemClass,
+                                                             Class<B> immutableBuilderClass) {
+        return ImmutableTableSchema.builder(immutableItemClass, immutableBuilderClass);
     }
 
     /**

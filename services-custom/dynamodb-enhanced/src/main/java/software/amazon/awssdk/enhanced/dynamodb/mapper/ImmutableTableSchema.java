@@ -37,61 +37,62 @@ import software.amazon.awssdk.enhanced.dynamodb.DefaultAttributeConverterProvide
 import software.amazon.awssdk.enhanced.dynamodb.EnhancedType;
 import software.amazon.awssdk.enhanced.dynamodb.TableSchema;
 import software.amazon.awssdk.enhanced.dynamodb.internal.converter.ConverterProviderResolver;
-import software.amazon.awssdk.enhanced.dynamodb.internal.mapper.ResolvedStaticAttribute;
+import software.amazon.awssdk.enhanced.dynamodb.internal.mapper.ResolvedImmutableAttribute;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 /**
- * Implementation of {@link TableSchema} that builds a schema based on directly declared attributes and methods to
- * get and set those attributes. Just like {@link ImmutableTableSchema} which is the equivalent implementation for
- * immutable objects, this is the most direct, and thus fastest, implementation of {@link TableSchema}.
+ * Implementation of {@link TableSchema} that builds a schema for immutable data objects based on directly declared
+ * attributes. Just like {@link StaticTableSchema} which is the equivalent implementation for mutable objects, this is
+ * the most direct, and thus fastest, implementation of {@link TableSchema}.
  * <p>
- * Example using a fictional 'Customer' data item class:-
- * <pre>{@code
+ * Example using a fictional 'Customer' immutable data item class that has an inner builder class named 'Builder':-
+ * {@code
  * static final TableSchema<Customer> CUSTOMER_TABLE_SCHEMA =
- *      StaticTableSchema.builder(Customer.class)
- *        .newItemSupplier(Customer::new)
+ *      ImmutableTableSchema.builder(Customer.class, Customer.Builder.class)
+ *        .newItemBuilder(Customer::builder, Customer.Builder::build)
  *        .addAttribute(String.class, a -> a.name("account_id")
- *                                          .getter(Customer::getAccountId)
- *                                          .setter(Customer::setAccountId)
+ *                                          .getter(Customer::accountId)
+ *                                          .setter(Customer.Builder::accountId)
  *                                          .tags(primaryPartitionKey()))
  *        .addAttribute(Integer.class, a -> a.name("sub_id")
- *                                           .getter(Customer::getSubId)
- *                                           .setter(Customer::setSubId)
+ *                                           .getter(Customer::subId)
+ *                                           .setter(Customer.Builder::subId)
  *                                           .tags(primarySortKey()))
  *        .addAttribute(String.class, a -> a.name("name")
- *                                          .getter(Customer::getName)
- *                                          .setter(Customer::setName)
+ *                                          .getter(Customer::name)
+ *                                          .setter(Customer.Builder::name)
  *                                          .tags(secondaryPartitionKey("customers_by_name")))
  *        .addAttribute(Instant.class, a -> a.name("created_date")
- *                                           .getter(Customer::getCreatedDate)
- *                                           .setter(Customer::setCreatedDate)
+ *                                           .getter(Customer::createdDate)
+ *                                           .setter(Customer.Builder::createdDate)
  *                                           .tags(secondarySortKey("customers_by_date"),
  *                                                 secondarySortKey("customers_by_name")))
  *        .build();
- * }</pre>
+ * }
  */
 @SdkPublicApi
-public final class StaticTableSchema<T> implements TableSchema<T> {
-    private final List<ResolvedStaticAttribute<T>> attributeMappers;
-    private final Supplier<T> newItemSupplier;
-    private final Map<String, ResolvedStaticAttribute<T>> indexedMappers;
+public final class ImmutableTableSchema<T, B> implements TableSchema<T> {
+    private final List<ResolvedImmutableAttribute<T, B>> attributeMappers;
+    private final Supplier<B> newBuilderSupplier;
+    private final Function<B, T> buildItemFunction;
+    private final Map<String, ResolvedImmutableAttribute<T, B>> indexedMappers;
     private final StaticTableMetadata tableMetadata;
     private final EnhancedType<T> itemType;
     private final AttributeConverterProvider attributeConverterProvider;
 
-    private StaticTableSchema(Builder<T> builder) {
+    private ImmutableTableSchema(Builder<T, B> builder) {
         StaticTableMetadata.Builder tableMetadataBuilder = StaticTableMetadata.builder();
 
         this.attributeConverterProvider =
                 ConverterProviderResolver.resolveProviders(builder.attributeConverterProviders);
 
         // Resolve declared attributes and find converters for them
-        Stream<ResolvedStaticAttribute<T>> attributesStream = builder.attributes == null ?
+        Stream<ResolvedImmutableAttribute<T, B>> attributesStream = builder.attributes == null ?
             Stream.empty() : builder.attributes.stream().map(a -> a.resolve(this.attributeConverterProvider));
 
-        // Merge resolved declared attributes and additional attributes that were added by extend or flatten
-        List<ResolvedStaticAttribute<T>> mutableAttributeMappers = new ArrayList<>();
-        Map<String, ResolvedStaticAttribute<T>>  mutableIndexedMappers = new HashMap<>();
+        // Merge resolved declared attributes
+        List<ResolvedImmutableAttribute<T, B>> mutableAttributeMappers = new ArrayList<>();
+        Map<String, ResolvedImmutableAttribute<T, B>>  mutableIndexedMappers = new HashMap<>();
         Stream.concat(attributesStream, builder.additionalAttributes.stream()).forEach(
             resolvedAttribute -> {
                 String attributeName = resolvedAttribute.attributeName();
@@ -117,43 +118,52 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
 
         this.attributeMappers = Collections.unmodifiableList(mutableAttributeMappers);
         this.indexedMappers = Collections.unmodifiableMap(mutableIndexedMappers);
-        this.newItemSupplier = builder.newItemSupplier;
+        this.newBuilderSupplier = builder.newBuilderSupplier;
+        this.buildItemFunction = builder.buildItemFunction;
         this.tableMetadata = tableMetadataBuilder.build();
         this.itemType = EnhancedType.of(builder.itemClass);
     }
 
     /**
-     * Creates a builder for a {@link StaticTableSchema} typed to specific data item class.
-     * @param itemClass The data item class object that the {@link StaticTableSchema} is to map to.
+     * Creates a builder for a {@link ImmutableTableSchema} typed to specific immutable data item class.
+     * @param itemClass The immutable data item class object that the {@link ImmutableTableSchema} is to map to.
+     * @param builderClass The builder class object that can be used to construct instances of the immutable data item.
      * @return A newly initialized builder
      */
-    public static <T> Builder<T> builder(Class<T> itemClass) {
-        return new Builder<>(itemClass);
+    public static <T, B> Builder<T, B> builder(Class<T> itemClass, Class<B> builderClass) {
+        return new Builder<>(itemClass, builderClass);
     }
 
     /**
-     * Builder for a {@link StaticTableSchema}
-     * @param <T> The data item type that the {@link StaticTableSchema} this builder will build is to map to.
+     * Builder for a {@link ImmutableTableSchema}
+     * @param <T> The immutable data item class object that the {@link ImmutableTableSchema} is to map to.
+     * @param <B> The builder class object that can be used to construct instances of the immutable data item.
      */
-    public static final class Builder<T> {
+    public static final class Builder<T, B> {
         private final Class<T> itemClass;
-        private final List<ResolvedStaticAttribute<T>> additionalAttributes = new ArrayList<>();
+        private final Class<B> builderClass;
+        private final List<ResolvedImmutableAttribute<T, B>> additionalAttributes = new ArrayList<>();
 
-        private List<StaticAttribute<T, ?>> attributes;
-        private Supplier<T> newItemSupplier;
+        private List<ImmutableAttribute<T, B, ?>> attributes;
+        private Supplier<B> newBuilderSupplier;
+        private Function<B, T> buildItemFunction;
         private List<StaticTableTag> tags;
         private List<AttributeConverterProvider> attributeConverterProviders =
             Collections.singletonList(ConverterProviderResolver.defaultConverterProvider());
 
-        private Builder(Class<T> itemClass) {
+        private Builder(Class<T> itemClass, Class<B> builderClass) {
             this.itemClass = itemClass;
+            this.builderClass = builderClass;
         }
 
         /**
-         * A function that can be used to create new instances of the data item class.
+         * Methods used to construct a new instance of the immutable data object.
+         * @param newBuilderMethod A method to create a new builder for the immutable data object.
+         * @param buildMethod A method on the builder to build a new instance of the immutable data object.
          */
-        public Builder<T> newItemSupplier(Supplier<T> newItemSupplier) {
-            this.newItemSupplier = newItemSupplier;
+        public Builder<T, B> newItemBuilder(Supplier<B> newBuilderMethod, Function<B, T> buildMethod) {
+            this.newBuilderSupplier = newBuilderMethod;
+            this.buildItemFunction = buildMethod;
             return this;
         }
 
@@ -162,8 +172,8 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
          * be associated with the schema. Will overwrite any existing attributes.
          */
         @SafeVarargs
-        public final Builder<T> attributes(StaticAttribute<T, ?>... staticAttributes) {
-            this.attributes = Arrays.asList(staticAttributes);
+        public final Builder<T, B> attributes(ImmutableAttribute<T, B, ?>... immutableAttributes) {
+            this.attributes = Arrays.asList(immutableAttributes);
             return this;
         }
 
@@ -171,8 +181,8 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
          * A list of attributes that can be mapped between the data item object and the database record that are to
          * be associated with the schema. Will overwrite any existing attributes.
          */
-        public Builder<T> attributes(Collection<StaticAttribute<T, ?>> staticAttributes) {
-            this.attributes = new ArrayList<>(staticAttributes);
+        public Builder<T, B> attributes(Collection<ImmutableAttribute<T, B, ?>> immutableAttributes) {
+            this.attributes = new ArrayList<>(immutableAttributes);
             return this;
         }
 
@@ -180,11 +190,12 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
          * Adds a single attribute to the table schema that can be mapped between the data item object and the database
          * record.
          */
-        public <R> Builder<T> addAttribute(EnhancedType<R> attributeType,
-                                           Consumer<StaticAttribute.Builder<T, R>> staticAttribute) {
+        public <R> Builder<T, B> addAttribute(EnhancedType<R> attributeType,
+                                              Consumer<ImmutableAttribute.Builder<T, B, R>> immutableAttribute) {
 
-            StaticAttribute.Builder<T, R> builder = StaticAttribute.builder(itemClass, attributeType);
-            staticAttribute.accept(builder);
+            ImmutableAttribute.Builder<T, B, R> builder = 
+                ImmutableAttribute.builder(itemClass, builderClass, attributeType);
+            immutableAttribute.accept(builder);
             return addAttribute(builder.build());
         }
 
@@ -192,61 +203,21 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
          * Adds a single attribute to the table schema that can be mapped between the data item object and the database
          * record.
          */
-        public <R> Builder<T> addAttribute(Class<R> attributeClass,
-                                           Consumer<StaticAttribute.Builder<T, R>> staticAttribute) {
-            return addAttribute(EnhancedType.of(attributeClass), staticAttribute);
+        public <R> Builder<T, B> addAttribute(Class<R> attributeClass,
+                                              Consumer<ImmutableAttribute.Builder<T, B, R>> immutableAttribute) {
+            return addAttribute(EnhancedType.of(attributeClass), immutableAttribute);
         }
 
         /**
          * Adds a single attribute to the table schema that can be mapped between the data item object and the database
          * record.
          */
-        public Builder<T> addAttribute(StaticAttribute<T, ?> staticAttribute) {
+        public Builder<T, B> addAttribute(ImmutableAttribute<T, B, ?> immutableAttribute) {
             if (this.attributes == null) {
                 this.attributes = new ArrayList<>();
             }
 
-            this.attributes.add(staticAttribute);
-            return this;
-        }
-
-        /**
-         * Flattens all the attributes defined in another {@link StaticTableSchema} into the database record this schema
-         * maps to. Functions to get and set an object that the flattened schema maps to is required.
-         */
-        public <R> Builder<T> flatten(StaticTableSchema<R> otherTableSchema,
-                                      Function<T, R> otherItemGetter,
-                                      BiConsumer<T, R> otherItemSetter) {
-            if (otherTableSchema.newItemSupplier == null) {
-                throw new IllegalArgumentException("Cannot flatten an abstract StaticTableSchema. Add a "
-                                                   + "'newItemSupplier' to the other StaticTableSchema to make it "
-                                                   + "concrete.");
-            }
-
-            // Creates a consumer that given a parent object will instantiate the composed object if its value is
-            // currently null and call the setter to store it on the parent object.
-            Consumer<T> composedObjectConstructor = parentObject -> {
-                if (otherItemGetter.apply(parentObject) == null) {
-                    R compositeItem = otherTableSchema.newItemSupplier.get();
-                    otherItemSetter.accept(parentObject, compositeItem);
-                }
-            };
-
-            otherTableSchema.attributeMappers.stream()
-                                             .map(attribute -> attribute.transform(otherItemGetter,
-                                                                                   composedObjectConstructor))
-                                             .forEach(this.additionalAttributes::add);
-            return this;
-        }
-
-        /**
-         * Extends the {@link StaticTableSchema} of a super-class, effectively rolling all the attributes modelled by
-         * the super-class into the {@link StaticTableSchema} of the sub-class.
-         */
-        public Builder<T> extend(StaticTableSchema<? super T> superTableSchema) {
-            Stream<ResolvedStaticAttribute<T>> attributeStream =
-                upcastingTransformForAttributes(superTableSchema.attributeMappers);
-            attributeStream.forEach(this.additionalAttributes::add);
+            this.attributes.add(immutableAttribute);
             return this;
         }
 
@@ -254,7 +225,7 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
          * Associate one or more {@link StaticTableTag} with this schema. See documentation on the tags themselves to
          * understand what each one does. This method will overwrite any existing table tags.
          */
-        public Builder<T> tags(StaticTableTag... staticTableTags) {
+        public Builder<T, B> tags(StaticTableTag... staticTableTags) {
             this.tags = Arrays.asList(staticTableTags);
             return this;
         }
@@ -263,7 +234,7 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
          * Associate one or more {@link StaticTableTag} with this schema. See documentation on the tags themselves to
          * understand what each one does. This method will overwrite any existing table tags.
          */
-        public Builder<T> tags(Collection<StaticTableTag> staticTableTags) {
+        public Builder<T, B> tags(Collection<StaticTableTag> staticTableTags) {
             this.tags = new ArrayList<>(staticTableTags);
             return this;
         }
@@ -272,12 +243,35 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
          * Associates a {@link StaticTableTag} with this schema. See documentation on the tags themselves to understand
          * what each one does. This method will add the tag to the list of existing table tags.
          */
-        public Builder<T> addTag(StaticTableTag staticTableTag) {
+        public Builder<T, B> addTag(StaticTableTag staticTableTag) {
             if (this.tags == null) {
                 this.tags = new ArrayList<>();
             }
 
             this.tags.add(staticTableTag);
+            return this;
+        }
+
+        /**
+         * Flattens all the attributes defined in another {@link ImmutableTableSchema} into the database record this schema
+         * maps to. Functions to get and set an object that the flattened schema maps to is required.
+         */
+        public <T1, B1> Builder<T, B> flatten(ImmutableTableSchema<T1, B1> otherTableSchema,
+                                              Function<T, T1> otherItemGetter,
+                                              BiConsumer<B, T1> otherItemSetter) {
+            throw new UnsupportedOperationException();
+        }
+
+        /**
+         * Extends the {@link ImmutableTableSchema} of a super-class, effectively rolling all the attributes modelled by
+         * the super-class into the {@link ImmutableTableSchema} of the sub-class. The extended immutable table schema
+         * must be using a builder class that is also a super-class of the builder being used for the current immutable
+         * table schema.
+         */
+        public Builder<T, B> extend(ImmutableTableSchema<? super T, ? super B> superTableSchema) {
+            Stream<ResolvedImmutableAttribute<T, B>> attributeStream =
+                upcastingTransformForAttributes(superTableSchema.attributeMappers);
+            attributeStream.forEach(this.additionalAttributes::add);
             return this;
         }
 
@@ -298,7 +292,7 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
          *
          * @param attributeConverterProviders a list of attribute converter providers to use with the table schema
          */
-        public Builder<T> attributeConverterProviders(AttributeConverterProvider... attributeConverterProviders) {
+        public Builder<T, B> attributeConverterProviders(AttributeConverterProvider... attributeConverterProviders) {
             this.attributeConverterProviders = Arrays.asList(attributeConverterProviders);
             return this;
         }
@@ -323,22 +317,23 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
          *
          * @param attributeConverterProviders a list of attribute converter providers to use with the table schema
          */
-        public Builder<T> attributeConverterProviders(List<AttributeConverterProvider> attributeConverterProviders) {
+        public Builder<T, B> attributeConverterProviders(List<AttributeConverterProvider> attributeConverterProviders) {
             this.attributeConverterProviders = new ArrayList<>(attributeConverterProviders);
             return this;
         }
 
 
         /**
-         * Builds a {@link StaticTableSchema} based on the values this builder has been configured with
+         * Builds a {@link ImmutableTableSchema} based on the values this builder has been configured with
          */
-        public StaticTableSchema<T> build() {
-            return new StaticTableSchema<>(this);
+        public ImmutableTableSchema<T, B> build() {
+            return new ImmutableTableSchema<>(this);
         }
 
-        private static <T extends R, R> Stream<ResolvedStaticAttribute<T>> upcastingTransformForAttributes(
-            Collection<ResolvedStaticAttribute<R>> superAttributes) {
-            return superAttributes.stream().map(attribute -> attribute.transform(x -> x, null));
+        private static <T extends T1, T1, B extends B1, B1> Stream<ResolvedImmutableAttribute<T, B>>
+        upcastingTransformForAttributes(Collection<ResolvedImmutableAttribute<T1, B1>> superAttributes) {
+
+            return superAttributes.stream().map(attribute -> attribute.transform(x -> x, x -> x));
         }
     }
 
@@ -349,26 +344,26 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
 
     @Override
     public T mapToItem(Map<String, AttributeValue> attributeMap) {
-        // Lazily instantiate the item once we have an attribute to write
-        T item = null;
+        // Lazily instantiate the builder once we have an attribute to write
+        B builder = null;
 
         for (Map.Entry<String, AttributeValue> entry : attributeMap.entrySet()) {
             String key = entry.getKey();
             AttributeValue value = entry.getValue();
             if (!isNullAttributeValue(value)) {
-                ResolvedStaticAttribute<T> attributeMapper = indexedMappers.get(key);
+                ResolvedImmutableAttribute<T, B> attributeMapper = indexedMappers.get(key);
 
                 if (attributeMapper != null) {
-                    if (item == null) {
-                        item = constructNewItem();
+                    if (builder == null) {
+                        builder = constructNewBuilder();
                     }
 
-                    attributeMapper.updateItemMethod().accept(item, value);
+                    attributeMapper.updateItemMethod().accept(builder, value);
                 }
             }
         }
 
-        return item;
+        return builder == null ? null : buildItemFunction.apply(builder);
     }
 
     @Override
@@ -404,7 +399,7 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
 
     @Override
     public AttributeValue attributeValue(T item, String key) {
-        ResolvedStaticAttribute<T> attributeMapper = indexedMappers.get(key);
+        ResolvedImmutableAttribute<T, B> attributeMapper = indexedMappers.get(key);
 
         if (attributeMapper == null) {
             throw new IllegalArgumentException(String.format("TableSchema does not know how to retrieve requested "
@@ -429,13 +424,13 @@ public final class StaticTableSchema<T> implements TableSchema<T> {
         return this.attributeConverterProvider;
     }
 
-    private T constructNewItem() {
-        if (newItemSupplier == null) {
+    private B constructNewBuilder() {
+        if (newBuilderSupplier == null) {
             throw new UnsupportedOperationException("An abstract TableSchema cannot be used to map a database record "
-                                                    + "to a concrete object. Add a 'newItemSupplier' to the "
+                                                    + "to a concrete object. Add a 'newItemBuilder' to the "
                                                     + "TableSchema to give it the ability to create mapped objects.");
         }
 
-        return newItemSupplier.get();
+        return newBuilderSupplier.get();
     }
 }
